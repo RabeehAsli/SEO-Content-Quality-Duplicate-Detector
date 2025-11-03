@@ -1,5 +1,5 @@
 
-# SEO Content Quality & Duplicate Detector
+# SEO-Content-Quality-Duplicate-Detector
 
 A machine learning pipeline that analyzes web content for SEO quality assessment and duplicate detection using NLP techniques and similarity algorithms.
 
@@ -7,8 +7,8 @@ A machine learning pipeline that analyzes web content for SEO quality assessment
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/seo-content-detector
-cd seo-content-detector
+git clone https://github.com/RabeehAsli/seo-content-quality-duplicate-detector
+cd seo-contentquality-duplicate-detector
 
 # Install dependencies
 pip install -r requirements.txt
