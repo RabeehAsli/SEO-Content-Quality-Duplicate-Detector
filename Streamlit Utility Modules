@@ -1,0 +1,248 @@
+# ============================================================================
+# streamlit_app/utils/parser.py
+# ============================================================================
+
+import requests
+from bs4 import BeautifulSoup
+import re
+from time import sleep
+from typing import Dict
+
+def scrape_and_parse(url: str) -> Dict:
+    """
+    Scrape and parse a URL to extract content.
+    
+    Args:
+        url: The URL to scrape
+        
+    Returns:
+        Dictionary with parsed content
+    """
+    try:
+        # Scrape
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        
+        # Parse HTML
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Remove unwanted elements
+        for element in soup(['script', 'style', 'nav', 'footer', 'header']):
+            element.decompose()
+        
+        # Extract title
+        title = soup.find('title')
+        title = title.get_text().strip() if title else ""
+        
+        # Extract body text
+        body_text = ""
+        content_selectors = ['article', 'main', '[role="main"]', '.content', '#content']
+        
+        for selector in content_selectors:
+            content = soup.select_one(selector)
+            if content:
+                body_text = content.get_text(separator=' ', strip=True)
+                break
+        
+        if not body_text:
+            paragraphs = soup.find_all('p')
+            body_text = ' '.join([p.get_text(strip=True) for p in paragraphs])
+        
+        # Clean text
+        body_text = re.sub(r'\s+', ' ', body_text).strip()
+        
+        return {
+            'url': url,
+            'title': title,
+            'body_text': body_text,
+            'word_count': len(body_text.split()) if body_text else 0
+        }
+    
+    except Exception as e:
+        return {'error': f"Failed to scrape URL: {str(e)}"}
+
+
+# ============================================================================
+# streamlit_app/utils/features.py
+# ============================================================================
+
+import nltk
+from nltk.tokenize import sent_tokenize, word_tokenize
+from nltk.corpus import stopwords
+import textstat
+import re
+from collections import Counter
+from typing import Dict, List
+from sentence_transformers import SentenceTransformer
+
+# Download required NLTK data
+try:
+    nltk.data.find('tokenizers/punkt')
+except LookupError:
+    nltk.download('punkt', quiet=True)
+    nltk.download('stopwords', quiet=True)
+
+def clean_text(text: str) -> str:
+    """Clean and normalize text."""
+    if not text:
+        return ""
+    text = text.lower()
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+
+def extract_keywords(text: str, top_n: int = 5) -> List[str]:
+    """Extract top N keywords."""
+    if not text:
+        return []
+    
+    try:
+        words = word_tokenize(text.lower())
+        stop_words = set(stopwords.words('english'))
+        words = [w for w in words if w.isalnum() and w not in stop_words and len(w) > 3]
+        
+        word_freq = Counter(words)
+        return [word for word, _ in word_freq.most_common(top_n)]
+    except:
+        return []
+
+
+def extract_features(parsed_data: Dict) -> Dict:
+    """
+    Extract all features from parsed content.
+    
+    Args:
+        parsed_data: Dictionary with parsed content
+        
+    Returns:
+        Dictionary with computed features
+    """
+    body_text = parsed_data.get('body_text', '')
+    
+    if not body_text:
+        return {
+            'word_count': 0,
+            'sentence_count': 0,
+            'flesch_reading_ease': 0,
+            'keywords': [],
+            'embedding': None
+        }
+    
+    # Basic metrics
+    word_count = len(body_text.split())
+    sentence_count = len(sent_tokenize(body_text))
+    
+    # Readability
+    try:
+        flesch_score = textstat.flesch_reading_ease(body_text)
+    except:
+        flesch_score = 0
+    
+    # Keywords
+    clean = clean_text(body_text)
+    keywords = extract_keywords(clean, top_n=5)
+    
+    # Embedding
+    try:
+        model = SentenceTransformer('all-MiniLM-L6-v2')
+        embedding = model.encode([clean])[0]
+    except:
+        embedding = None
+    
+    return {
+        'word_count': word_count,
+        'sentence_count': sentence_count,
+        'flesch_reading_ease': flesch_score,
+        'keywords': keywords,
+        'embedding': embedding,
+        'clean_text': clean
+    }
+
+
+# ============================================================================
+# streamlit_app/utils/scorer.py
+# ============================================================================
+
+import numpy as np
+import pandas as pd
+import json
+from sklearn.metrics.pairwise import cosine_similarity
+from sentence_transformers import SentenceTransformer
+from typing import Dict, List
+
+def predict_quality(features: Dict, model_data: Dict) -> str:
+    """
+    Predict content quality.
+    
+    Args:
+        features: Dictionary with extracted features
+        model_data: Dictionary with model and feature names
+        
+    Returns:
+        Quality label (High/Medium/Low)
+    """
+    try:
+        model = model_data['model']
+        feature_names = model_data['feature_names']
+        
+        # Prepare features in correct order
+        X = np.array([[
+            features['word_count'],
+            features['sentence_count'],
+            features['flesch_reading_ease']
+        ]])
+        
+        prediction = model.predict(X)[0]
+        return prediction
+    
+    except Exception as e:
+        print(f"Prediction error: {e}")
+        return "Unknown"
+
+
+def find_similar_content(features: Dict, reference_df: pd.DataFrame, threshold: float = 0.80) -> List[Dict]:
+    """
+    Find similar content in reference dataset.
+    
+    Args:
+        features: Dictionary with extracted features
+        reference_df: DataFrame with reference content
+        threshold: Similarity threshold
+        
+    Returns:
+        List of similar content dictionaries
+    """
+    try:
+        new_embedding = features.get('embedding')
+        
+        if new_embedding is None:
+            return []
+        
+        # Load reference embeddings
+        reference_embeddings = np.array([
+            json.loads(emb) for emb in reference_df['embedding']
+        ])
+        
+        # Compute similarities
+        similarities = cosine_similarity([new_embedding], reference_embeddings)[0]
+        
+        # Find similar content
+        similar = []
+        for idx, sim in enumerate(similarities):
+            if sim > threshold:
+                similar.append({
+                    'url': reference_df.iloc[idx]['url'],
+                    'similarity': float(sim)
+                })
+        
+        # Sort by similarity
+        similar.sort(key=lambda x: x['similarity'], reverse=True)
+        
+        return similar
+    
+    except Exception as e:
+        print(f"Similarity detection error: {e}")
+        return []
